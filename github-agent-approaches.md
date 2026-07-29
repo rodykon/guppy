@@ -41,7 +41,15 @@ bug | feature
 
 ## Affected Files (optional)
 - src/foo.ts
+
+## Tests (optional)
+- Specific test scenario or edge case you want covered
 ```
+
+The `Tests` section is optional, but only in the sense that filling it in is
+optional — the agent writes tests for every change regardless. If present,
+its contents are surfaced to the agent as scenarios it must additionally
+cover; if absent, the agent chooses scenarios itself.
 
 ---
 

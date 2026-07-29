@@ -2,6 +2,14 @@
 
 ## Phase 1: Prototype (Approach 3 — Claude Code CLI in GitHub Actions)
 
+> **Implemented.** The workflow and issue template described in this section
+> are built and live at `template/.github/workflows/issue-agent.yml` and
+> `template/.github/ISSUE_TEMPLATE/agent-task.md`. Install them into a target
+> repo with `./install.sh`. See `README.md` for usage. The YAML embedded
+> below is illustrative of the design; the real file is the source of truth
+> and may have since diverged in small ways (e.g. the `## Tests` handling
+> described below).
+
 ### How It Works
 
 A GitHub Actions workflow fires every time an issue is opened in the target repository. The workflow filters for the designated author and validates the issue format, then checks out the repository, runs Claude Code CLI in headless mode against the codebase with the issue as the prompt, commits whatever changes Claude Code makes, and opens a pull request targeting `dev`.
@@ -54,13 +62,26 @@ bug | feature
 
 ## Affected Files (optional)
 - path/to/file.ts
+
+## Tests (optional)
+- Specific test scenario or edge case you want covered
 ```
 
 **Validation rules:**
 - `## Type` section must be present and contain exactly `bug` or `feature`
 - `## Description` section must be non-empty
 - `## Acceptance Criteria` must have at least one item
+- `## Tests` is optional and unvalidated — free text describing specific
+  scenarios the reporter wants covered
 - Issue must be opened by the configured `ALLOWED_GITHUB_USER`
+
+**Tests behavior:** whether or not the `## Tests` section is present, the
+agent is always instructed to write automated tests for its change. If the
+section is present, its content is extracted and passed to the agent as
+required coverage in addition to whatever else it decides to test; if
+absent, the agent picks test scenarios itself based on the description and
+acceptance criteria. This is enforced in the fixed prompt instructions, not
+by the optional section's presence.
 
 ---
 
