@@ -1,0 +1,30 @@
+# Brings up the scheduler only. Worker images (the default from
+# Dockerfile.worker, and any per-repo overrides) are built separately and
+# launched dynamically by the scheduler through the Docker socket -- they
+# are not long-running services, so they have no place in this file. See
+# README.md for the full setup sequence.
+
+services:
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    image: guppy-scheduler:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GUPPY_CONFIG_PATH: /config/config.yaml
+      GUPPY_DATA_VOLUME: guppy-data
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      # DooD: lets the scheduler ask the host daemon to start sibling
+      # worker containers. See DESIGN.md for the tradeoffs of this vs DinD.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Named volume, not a host path -- required for DooD (see
+      # src/guppy/scheduler/launcher.py docstring for why).
+      - guppy-data:/data
+
+volumes:
+  guppy-data:
+    name: guppy-data

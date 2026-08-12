@@ -1,88 +1,85 @@
 # Guppy
 
-Guppy watches a GitHub repository for issues filed by a specific person in a
-specific format, and turns them into pull requests automatically. An issue
-comes in, Claude Code reads the codebase, implements the fix or feature,
-writes tests for it, and opens a PR against `dev` for a human to review.
+Guppy watches configured GitHub repositories for issues filed by whitelisted
+users in a specific format, and turns them into pull requests automatically.
+It runs as a standalone service (locally in Docker today; portable to a
+cloud job runner later) that polls on an interval and runs each qualifying
+issue through a four-stage Claude agent pipeline: plan, review the plan,
+implement, review the code. A human still reviews and merges every PR --
+the agent never touches `main` and never auto-merges.
 
-This repo is Guppy's home: the installable workflow, the issue template, an
-installer script, and the design docs behind them. It is **not** a repo that
-Guppy watches itself — install it into whichever repo you actually want the
-agent working on.
+See [`DESIGN.md`](DESIGN.md) for the full architecture and the reasoning
+behind each decision, and [`TODO.md`](TODO.md) for what was deliberately
+deferred.
 
-## How it works
+## How it works, briefly
 
 ```
-Issue opened (by the allowed user, matching the template)
-        │
-        ▼
-GitHub Actions workflow "Issue Agent"
-        │
-        ├─ Validate author + format -> skip silently if either fails
-        ├─ Checkout repo, install deps
-        ├─ Run Claude Code headlessly against the issue text
-        │     -> implements the change
-        │     -> always writes tests for it
-        │     -> runs the test suite and fixes failures it introduced
-        ├─ Commit to a new agent/<issue-number>-<slug> branch
-        └─ Open a PR against `dev` + comment on the issue with the link
+Scheduler (long-running container)
+  -> polls each configured repo every N seconds
+  -> filters: author whitelisted? issue body matches the template?
+  -> new qualifying issue -> job, dispatched (bounded concurrency) to a
+     fresh ephemeral worker container via the Docker socket
+
+Worker (one per job, torn down after)
+  -> clones the repo with a token scoped to only that repo
+  -> planner -> plan reviewer -> implementer -> code reviewer
+     (single pass each; any stage can SKIP and abort with an explanatory
+     comment instead of pushing something bad)
+  -> on success: branch, commit, push, open a PR against the repo's base
+     branch, comment on the issue with the link
 ```
 
-A human still reviews and merges the PR — the agent never touches `main`
-directly and never auto-merges.
+## Prerequisites
 
-See [`github-agent-approaches.md`](github-agent-approaches.md) for the
-architecture options considered and [`solution-design.md`](solution-design.md)
-for the full design rationale, phased rollout plan, and future migration path
-to a self-hosted server.
+- Docker and Docker Compose.
+- An [Anthropic API key](https://console.anthropic.com/).
+- For each repo you want to watch: a fine-grained GitHub PAT scoped to
+  *only that repo*, with `Contents: write`, `Pull requests: write`, and
+  `Issues: write`.
+- Each target repo should have a `.guppy/context.md` file describing its
+  architecture for the agents (authoring these is not yet tooled -- write
+  them by hand for now).
 
-## What's in this repo
+## Setup
 
-| Path | Purpose |
-|---|---|
-| `template/.github/workflows/issue-agent.yml` | The GitHub Actions workflow. Copy this into a target repo. |
-| `template/.github/ISSUE_TEMPLATE/agent-task.md` | The issue template the agent expects. Copy this too. |
-| `install.sh` | Interactive installer that copies both files in and configures the target repo. |
-| `solution-design.md`, `github-agent-approaches.md` | Design docs. |
+1. **Configure.**
+   ```bash
+   cp config.example.yaml config.yaml
+   cp .env.example .env
+   ```
+   Edit `config.yaml`: list the repos to watch, each with its
+   `github_token_env` (the *name* of an env var, not the token itself),
+   whitelisted `allowed_users`, base branch, and any setup commands the
+   worker needs to run before the pipeline (e.g. `npm ci`). Edit `.env`
+   with the actual secret values -- `ANTHROPIC_API_KEY` and one token per
+   repo, matching the env var names you used in `config.yaml`. Never
+   commit `.env` or `config.yaml` (both are gitignored).
 
-## Installing Guppy into a repo
+2. **Build the images.**
+   ```bash
+   docker compose build scheduler
+   docker build -f Dockerfile.worker -t guppy-worker:latest .
+   ```
+   The worker image isn't part of `docker-compose.yml` -- it's not a
+   long-running service, the scheduler launches disposable instances of it
+   per job. If a repo needs a different runtime than the generic image
+   provides (Node + Python by default), build a repo-specific image and
+   point that repo's `worker_image` at it in `config.yaml`.
 
-Prerequisites:
-- The target repo is a git repo you can push to, hosted on GitHub.
-- You have an [Anthropic API key](https://console.anthropic.com/).
-- You have a fine-grained GitHub PAT (or will create one) scoped to the
-  target repo with **Contents: write** and **Pull requests: write**.
-- (Optional but recommended) the [`gh` CLI](https://cli.github.com/),
-  authenticated (`gh auth login`) — the installer will use it to set the
-  repo variable/secrets for you. Without it, the installer prints the exact
-  manual steps instead.
+3. **Add the context file** to each target repo: `.guppy/context.md`,
+   committed like any other file, describing the codebase for the agents.
 
-Run:
+4. **Run.**
+   ```bash
+   docker compose up -d scheduler
+   docker compose logs -f scheduler
+   ```
 
-```bash
-./install.sh /path/to/target-repo
-```
+## Filing an issue Guppy will pick up
 
-(Omit the path to target the current directory.) The installer will:
-
-1. Copy `issue-agent.yml` and `agent-task.md` into the target repo's
-   `.github/` — asking before overwriting anything that's already there.
-2. Ask which GitHub username is allowed to trigger the agent, and set the
-   `ALLOWED_GITHUB_USER` repo variable (via `gh`, or print manual
-   instructions).
-3. Optionally set the `ANTHROPIC_API_KEY` and `AGENT_GITHUB_TOKEN` secrets
-   via `gh` (input is hidden), or print manual instructions.
-4. Check whether a `dev` branch exists — the workflow opens PRs against it —
-   and offer to create and push one if not.
-
-After it finishes, open the copied workflow file and adjust the
-"Set up Node / Python / etc." and "Install project dependencies" steps to
-match the target project's runtime (they default to Node).
-
-## Using it
-
-Once installed, have the allowed user open an issue on the target repo using
-the **Agent Task** template:
+Only issues from a repo's `allowed_users`, matching this format, are
+picked up:
 
 ```markdown
 ## Type
@@ -99,40 +96,44 @@ bug | feature
 - path/to/file.ts
 
 ## Tests (optional)
-- Specific scenario or edge case you want covered
+- Specific test scenario or edge case you want covered
 ```
 
-Only `Type`, `Description`, and `Acceptance Criteria` are required — the
-workflow silently ignores (and comments on) issues that don't match, or that
-weren't opened by the allowed user.
+`Type`, `Description`, and `Acceptance Criteria` are required; issues from
+a whitelisted author that don't match get a comment explaining why, once.
+`Tests` is optional, but doesn't gate whether tests get written -- the
+implementer always writes tests; if you fill this section in, those
+specific scenarios are passed through as required coverage on top of
+whatever else the agent decides to test.
 
-`Tests` is optional, but it doesn't gate whether tests get written: **the
-agent always writes tests for its change**, using the project's existing
-test framework. If you fill in the `Tests` section, those specific scenarios
-are called out to the agent as required coverage in addition to whatever else
-it decides to test. If you leave it out, the agent picks the scenarios
-itself based on the description and acceptance criteria.
+Each qualifying issue is processed **at most once, ever**. A SKIPped issue
+(the agent judged it unsafe to act on) won't be retried automatically --
+close it and open a fresh one if you rework it.
 
-From there:
-1. The "Issue Agent" workflow run appears under the repo's **Actions** tab.
-2. If the issue matched the format, Claude Code runs, and its full output is
-   uploaded as a build artifact (`claude-output-<issue-number>`) for
-   debugging.
-3. If it produced changes, a PR opens against `dev` and the issue gets a
-   comment with the link. Review the diff — including the generated tests —
-   before merging.
-4. If it couldn't produce a safe change, or produced no changes, the issue
-   gets a comment saying so instead.
+## Checking on a job
 
-## Known limitations (Phase 1 prototype)
+There's no dashboard yet (see `TODO.md`) -- query the shared SQLite store
+directly:
 
-- No persistent memory between runs — every issue starts the agent cold.
-- Token/cost scales with repo size and how much the agent needs to read.
-- GitHub Actions' 6-hour job limit caps how long a single run can take.
-- No approval gate before the PR is opened — review happens at the PR, not
-  before.
-- No retry logic — a failed Claude API call fails the whole run.
+```bash
+docker compose exec scheduler python3 -c "
+import sqlite3
+conn = sqlite3.connect('/data/guppy.db')
+conn.row_factory = sqlite3.Row
+for row in conn.execute('SELECT id, repo_slug, issue_number, status, stage, pr_url FROM jobs ORDER BY created_at DESC LIMIT 20'):
+    print(dict(row))
+"
+```
 
-`solution-design.md` describes the Phase 2 migration path (a self-hosted
-webhook server with a job queue, retries, and an approval gate) and the
-concrete triggers for when it's worth making that move.
+Each job's artifacts (plan, reviewed plan, diff, full pipeline log) are
+under `/data` on the `guppy-data` volume, at paths recorded in that job's
+row (`plan_artifact_path`, `plan_review_artifact_path`,
+`diff_artifact_path`, `log_path`).
+
+## Known limitations (see TODO.md for the full list and reasoning)
+
+- No retry loop between pipeline stages -- a stage that can't produce
+  something usable SKIPs the whole job.
+- No status dashboard -- query SQLite directly.
+- Worker containers have unrestricted outbound network access.
+- No re-trigger if a SKIPped issue is later edited.

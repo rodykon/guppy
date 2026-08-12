@@ -1,0 +1,58 @@
+# Copy this file to config.yaml and edit. Secrets are referenced by
+# environment variable name, never written here directly -- put actual
+# values in a .env file (see .env.example) that's passed to the scheduler
+# container and never committed.
+
+settings:
+  # How often to poll each configured repo for new issues.
+  poll_interval_seconds: 300
+
+  # How many jobs (issues being worked on) can run at once, across all repos.
+  max_concurrent_jobs: 2
+
+  # Base image used for a repo's worker unless it overrides worker_image below.
+  default_worker_image: "guppy-worker:latest"
+
+  # Max Claude Agent SDK turns per pipeline stage, unless a repo overrides
+  # them below. Raise for large/complex repos that need more exploration.
+  default_turn_budgets:
+    planner: 15
+    plan_reviewer: 10
+    implementer: 30
+    code_reviewer: 20
+
+  # Name of the environment variable holding your Anthropic API key.
+  anthropic_api_key_env: "ANTHROPIC_API_KEY"
+
+  # SQLite state file. Should live on a mounted volume so it survives
+  # container restarts.
+  sqlite_path: "/data/guppy.db"
+
+  # Docker socket the scheduler uses to launch ephemeral worker containers.
+  docker_socket: "/var/run/docker.sock"
+
+repos:
+  - slug: "acme/widgets"
+    # Name of the env var holding a fine-grained GitHub PAT scoped to ONLY
+    # this repo (Contents: write, Pull requests: write, Issues: write).
+    github_token_env: "GUPPY_TOKEN_ACME_WIDGETS"
+    allowed_users:
+      - "alice"
+    base_branch: "dev"
+    # Uncomment to use a repo-specific worker image instead of the default,
+    # e.g. one with this repo's language toolchain preinstalled.
+    # worker_image: "guppy-worker-acme-widgets:latest"
+    setup_commands:
+      - "npm ci"
+    # Uncomment to override turn budgets just for this repo.
+    # turn_budgets:
+    #   implementer: 50
+
+  - slug: "acme/data-pipeline"
+    github_token_env: "GUPPY_TOKEN_ACME_DATA_PIPELINE"
+    allowed_users:
+      - "alice"
+      - "bob"
+    base_branch: "develop"
+    setup_commands:
+      - "pip install -r requirements.txt"
