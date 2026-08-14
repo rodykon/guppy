@@ -38,7 +38,17 @@ Scheduler (long-running container, src/guppy/scheduler/)
 Worker (one per job, src/guppy/worker/, torn down after)
   main.py      -> entrypoint: clone (repo-scoped token), run setup
                   commands, read .guppy/context.md, run the pipeline,
-                  push + open PR or comment + SKIP
+                  push + open PR or comment + SKIP. REPO_DIR (/work/repo)
+                  is deliberately ephemeral -- the clone doesn't need to
+                  outlive the job. ARTIFACTS_ROOT must NOT follow that
+                  pattern: it's under /data (the shared volume), not
+                  /work, because the paths written there get recorded in
+                  SQLite and read back after the container is gone. Got
+                  this wrong once already (artifacts written under /work
+                  vanished with the container the moment it was cleaned
+                  up, leaving dangling paths in the store) -- if you're
+                  adding a new kind of worker output that needs to
+                  outlive the job, it goes under /data, not /work.
   pipeline.py  -> the 4-stage Claude Agent SDK orchestration
   prompts.py   -> per-stage prompt construction, shared SKIP contract
   git_ops.py   -> subprocess git only; redacts the embedded token from any

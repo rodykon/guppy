@@ -28,7 +28,12 @@ from guppy.worker.prompts import PipelineContext
 logger = logging.getLogger("guppy.worker")
 
 REPO_DIR = Path("/work/repo")
-ARTIFACTS_ROOT = Path("/work/artifacts")
+# Must be on the shared /data volume (mounted into every worker, same as
+# the scheduler -- see launcher.py's DATA_MOUNT_PATH), not the worker's own
+# ephemeral filesystem: the container is torn down after the job, so
+# anything under /work is gone by the time anyone -- including the
+# scheduler, which records these paths in the store -- goes looking for it.
+ARTIFACTS_ROOT = Path("/data/artifacts")
 CONTEXT_FILE_RELATIVE_PATH = ".guppy/context.md"
 
 
