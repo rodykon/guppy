@@ -51,5 +51,10 @@ class Poller:
                 logger.info("skipped %s#%d: invalid format", repo.slug, issue.number)
                 continue
 
-            job_id = self._store.create_job(repo.slug, issue.number, issue.title)
-            logger.info("queued job %s for %s#%d", job_id, repo.slug, issue.number)
+            job_id = self._store.create_job(
+                repo.slug, issue.number, issue.title, difficulty=issue.validation.difficulty
+            )
+            logger.info(
+                "queued job %s for %s#%d (difficulty=%s)",
+                job_id, repo.slug, issue.number, issue.validation.difficulty,
+            )

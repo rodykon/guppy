@@ -5,7 +5,16 @@ constraints (carried over from v1). Test generation is unconditional: the
 implementer is always instructed to write tests, whether or not the issue's
 optional "## Tests" section is filled in -- if it is, those scenarios are
 surfaced as required coverage in addition to whatever else the agent
-decides to test.
+decides to test, at every difficulty level (see below).
+
+Difficulty (`PipelineContext.difficulty`) determines which stages
+`pipeline.run_pipeline` runs at all -- it isn't inspected by the prompt
+functions here. What this module does care about is whether a plan exists
+by the time implementer/code_reviewer run: trivial/easy skip the planner
+entirely, so those stages get the `_no_plan` prompt variants below ("work
+directly from the issue") instead of a placeholder plan spliced into the
+normal template -- a placeholder would read like a template bug to the
+model.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ class PipelineContext:
     issue_body: str
     issue_type: str
     tests_section: str | None
+    difficulty: str
     context_file_content: str | None
 
 
@@ -110,6 +120,28 @@ for the pipeline's internal logs, not the PR description).
 {_COMMON_CONSTRAINTS}"""
 
 
+def implementer_prompt_no_plan(ctx: PipelineContext) -> str:
+    return f"""You are the implementation stage of an automated coding \
+agent pipeline. This issue was classified low-difficulty, so no planning \
+stage ran -- work directly from the issue below: explore the codebase as \
+needed and implement it yourself.
+
+{_issue_context_block(ctx)}
+
+Your task:
+1. Implement a change that satisfies the acceptance criteria.
+2. Write automated tests for your change, using the project's existing \
+test framework and conventions, covering the acceptance criteria. \
+{_tests_instruction(ctx)}
+3. Run the test suite and fix any failures, including in the tests you \
+just wrote.
+
+Your final message should be a short summary of what you changed (this is \
+for the pipeline's internal logs, not the PR description).
+
+{_COMMON_CONSTRAINTS}"""
+
+
 def code_reviewer_prompt(ctx: PipelineContext, plan: str, implementer_summary: str) -> str:
     return f"""You are the final code-review stage of an automated coding \
 agent pipeline. Review the changes already made in this working directory \
@@ -121,6 +153,30 @@ anything wrong -- don't just report problems.
 --- Final plan ---
 {plan}
 --- end plan ---
+
+--- Implementer's summary of changes made ---
+{implementer_summary}
+--- end summary ---
+
+Check: does the diff satisfy the acceptance criteria? Do the tests \
+actually cover the acceptance criteria (and the "## Tests" section's \
+scenarios, if the issue has one)? Do all tests pass? Fix anything that \
+doesn't hold up.
+
+Your final message should be a short summary confirming the change is \
+ready for human review (or, if you used SKIP, why it isn't).
+
+{_COMMON_CONSTRAINTS}"""
+
+
+def code_reviewer_prompt_no_plan(ctx: PipelineContext, implementer_summary: str) -> str:
+    return f"""You are the final code-review stage of an automated coding \
+agent pipeline. This issue was classified low-difficulty, so no plan was \
+produced -- review the changes already made in this working directory \
+directly against the issue below, run the test suite, and directly fix \
+anything wrong -- don't just report problems.
+
+{_issue_context_block(ctx)}
 
 --- Implementer's summary of changes made ---
 {implementer_summary}

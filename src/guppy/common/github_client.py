@@ -28,11 +28,25 @@ _TESTS_RE = re.compile(
     r"^##\s+Tests(?:\s*\(optional\))?\s*\n+(.+?)(?=\n##\s|\Z)",
     re.MULTILINE | re.IGNORECASE | re.DOTALL,
 )
+# Difficulty gates which pipeline stages run (see worker/pipeline.py). It's
+# optional and defaults to "difficult" (today's full pipeline) when the
+# section is absent entirely -- but if the section header IS present, its
+# value is validated as strictly as ## Type, so a typo fails the whole issue
+# rather than silently degrading to a different pipeline than the filer
+# intended.
+_DIFFICULTY_VALUES = ("trivial", "easy", "medium", "difficult")
+_DIFFICULTY_RE = re.compile(
+    r"^##\s+Difficulty\s*\n+\s*(" + "|".join(_DIFFICULTY_VALUES) + r")\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_DIFFICULTY_HEADER_RE = re.compile(r"^##\s+Difficulty\s*\n", re.MULTILINE | re.IGNORECASE)
+DEFAULT_DIFFICULTY = "difficult"
 
 REQUIRED_FORMAT_HINT = (
     "Required sections: `## Type` (bug|feature), `## Description`, and "
     "`## Acceptance Criteria` (at least one `- [ ]` item). Optional: "
-    "`## Affected Files`, `## Tests`."
+    "`## Affected Files`, `## Tests`, `## Difficulty` "
+    "(trivial|easy|medium|difficult, default difficult)."
 )
 
 
@@ -41,6 +55,7 @@ class ValidationResult:
     valid: bool
     issue_type: str | None = None
     tests_section: str | None = None
+    difficulty: str | None = None  # only set when valid; see DEFAULT_DIFFICULTY
     reason: str | None = None  # human-readable, only set when invalid
 
 
@@ -58,6 +73,19 @@ def validate_issue_body(body: str | None) -> ValidationResult:
     if not has_ac:
         missing.append("a `## Acceptance Criteria` section with at least one `- [ ]` item")
 
+    difficulty_match = _DIFFICULTY_RE.search(body)
+    if difficulty_match:
+        difficulty = difficulty_match.group(1).lower()
+    elif _DIFFICULTY_HEADER_RE.search(body):
+        # Header present but value isn't one of the four exact words -- fail
+        # the whole issue rather than guessing, same treatment as a bad Type.
+        missing.append(
+            "a `## Difficulty` value of exactly one of trivial|easy|medium|difficult"
+        )
+        difficulty = None
+    else:
+        difficulty = DEFAULT_DIFFICULTY
+
     if missing:
         reason = (
             "This issue doesn't match the required format. Missing: "
@@ -68,7 +96,12 @@ def validate_issue_body(body: str | None) -> ValidationResult:
 
     tests_match = _TESTS_RE.search(body)
     tests_section = tests_match.group(1).strip() if tests_match else None
-    return ValidationResult(valid=True, issue_type=has_type.group(1).lower(), tests_section=tests_section)
+    return ValidationResult(
+        valid=True,
+        issue_type=has_type.group(1).lower(),
+        tests_section=tests_section,
+        difficulty=difficulty,
+    )
 
 
 @dataclass

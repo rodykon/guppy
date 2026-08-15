@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     issue_title         TEXT NOT NULL,
     status              TEXT NOT NULL,
     stage               TEXT,
+    difficulty          TEXT,
     pr_url              TEXT,
     skip_reason         TEXT,
     error_message       TEXT,
@@ -68,6 +69,7 @@ class Job:
     issue_title: str
     status: JobStatus
     stage: str | None = None
+    difficulty: str | None = None
     pr_url: str | None = None
     skip_reason: str | None = None
     error_message: str | None = None
@@ -134,17 +136,23 @@ class Store:
 
     # -- job lifecycle -----------------------------------------------------
 
-    def create_job(self, repo_slug: str, issue_number: int, issue_title: str) -> str:
+    def create_job(
+        self, repo_slug: str, issue_number: int, issue_title: str, difficulty: str | None = None
+    ) -> str:
         """Creates a job and marks the issue processed in the same
         transaction -- an issue is considered "processed" the instant a job
         exists for it, regardless of eventual outcome (see DESIGN.md: each
-        qualifying issue processed exactly once, ever)."""
+        qualifying issue processed exactly once, ever).
+
+        `difficulty` is None for issues that failed format validation (the
+        poller still creates a job for those, just to post the explanatory
+        comment once -- see poller.py)."""
         job_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO jobs (id, repo_slug, issue_number, issue_title, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, repo_slug, issue_number, issue_title, JobStatus.QUEUED.value, _now()),
+                "INSERT INTO jobs (id, repo_slug, issue_number, issue_title, status, difficulty, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (job_id, repo_slug, issue_number, issue_title, JobStatus.QUEUED.value, difficulty, _now()),
             )
             self._mark_issue_processed(conn, repo_slug, issue_number, job_id)
         return job_id

@@ -103,7 +103,7 @@ doesn't have to be reconstructed later.
 
 ## Issue format
 
-Unchanged from v1's spec:
+Carried over from v1's spec, plus one addition (`## Difficulty`, see below):
 
 ```markdown
 ## Type
@@ -121,13 +121,51 @@ bug | feature
 
 ## Tests (optional)
 - Specific test scenario or edge case you want covered
+
+## Difficulty (optional)
+trivial | easy | medium | difficult
 ```
 
 `Type`, `Description`, and `Acceptance Criteria` are required. `Tests` is
 optional but doesn't gate whether tests get written — the implementer stage
-always writes tests; if the section is filled in, those scenarios are passed
-through as required coverage in addition to whatever else the agent decides
-to test.
+always writes tests at every difficulty; if the section is filled in, those
+scenarios are passed through as required coverage in addition to whatever
+else the agent decides to test.
+
+`Difficulty` gates which of the four pipeline stages run, to avoid running
+the full plan → review-plan → implement → review-code sequence on trivial
+issues:
+
+| Difficulty | Stages |
+|---|---|
+| `trivial` | implementer only |
+| `easy` | implementer, code_reviewer |
+| `medium` | planner, implementer, code_reviewer |
+| `difficult` | all four (unchanged) |
+
+It's optional and defaults to `difficult` when absent, so pre-existing
+issue-filing habits don't silently change behavior. Validated exactly as
+strictly as `Type` when present: an unrecognized value (typo, wrong casing
+beyond what's normalized, etc.) fails the whole issue rather than silently
+falling back to a default, consistent with how a bad `Type` behaves today
+— since re-trigger-on-edit is deferred (see `TODO.md`), a rejected issue
+needs a fresh issue to retry, not an edit.
+
+When a stage is skipped because there's no plan yet (trivial/easy),
+implementer and code_reviewer get distinct prompt wording ("work directly
+from the issue") rather than a placeholder plan spliced into the normal
+template — see `worker/prompts.py`. When plan_reviewer alone is skipped
+(medium), implementer/code_reviewer get the planner's raw, unreviewed
+output through the same wording used for `difficult`.
+
+Reduced pipelines don't escalate: if the implementer or code reviewer
+decides mid-task that a `trivial`/`easy`/`medium` classification was wrong,
+the only available response is the same single-pass SKIP escape hatch used
+everywhere else — the job aborts with an explanatory comment rather than
+restarting with more stages. Turn budgets (`TurnBudgets`) don't vary by
+difficulty either; a trivial/easy implementer absorbing the planner's
+exploration work uses the same per-stage budget as always, revisited later
+only if that turns out to matter in practice.
 
 ---
 

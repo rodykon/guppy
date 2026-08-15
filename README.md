@@ -97,14 +97,34 @@ bug | feature
 
 ## Tests (optional)
 - Specific test scenario or edge case you want covered
+
+## Difficulty (optional)
+trivial | easy | medium | difficult
 ```
 
 `Type`, `Description`, and `Acceptance Criteria` are required; issues from
 a whitelisted author that don't match get a comment explaining why, once.
 `Tests` is optional, but doesn't gate whether tests get written -- the
-implementer always writes tests; if you fill this section in, those
-specific scenarios are passed through as required coverage on top of
-whatever else the agent decides to test.
+implementer always writes tests at every difficulty; if you fill this
+section in, those specific scenarios are passed through as required
+coverage on top of whatever else the agent decides to test.
+
+`Difficulty` is optional and defaults to `difficult` (today's full
+pipeline) if omitted -- but if you include the section, its value must be
+exactly one of the four words above, or the issue fails validation same as
+a bad `Type`. It controls which pipeline stages run, to avoid burning
+tokens planning and reviewing trivial changes:
+
+| Difficulty | Stages that run |
+|---|---|
+| `trivial` | implement |
+| `easy` | implement, review code |
+| `medium` | plan, implement, review code |
+| `difficult` | plan, review plan, implement, review code (default) |
+
+Mandatory test generation and the single-pass SKIP escape hatch apply
+identically at every difficulty -- a reduced pipeline that turns out to be
+insufficient just SKIPs rather than escalating to a fuller one.
 
 Each qualifying issue is processed **at most once, ever**. A SKIPped issue
 (the agent judged it unsafe to act on) won't be retried automatically --

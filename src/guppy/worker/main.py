@@ -122,6 +122,7 @@ async def _async_main() -> int:
             issue_body=issue.body,
             issue_type=issue.validation.issue_type or "unspecified",
             tests_section=issue.validation.tests_section,
+            difficulty=issue.validation.difficulty or "difficult",
             context_file_content=context_file_content,
         )
 

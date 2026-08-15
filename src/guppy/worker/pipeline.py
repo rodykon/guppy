@@ -1,4 +1,4 @@
-"""Runs the four-stage Claude Agent SDK pipeline against a cloned repo.
+"""Runs the (up to) four-stage Claude Agent SDK pipeline against a cloned repo.
 
 Single pass per stage, no retries (see DESIGN.md / TODO.md). Any stage can
 end the whole job by responding with a "SKIP: <reason>" final message --
@@ -9,6 +9,13 @@ Tool scoping is the actual safety mechanism here: the planner and plan
 reviewer only ever get read-only tools, so they cannot touch repo files no
 matter what a prompt says -- the SKIP-on-request behavior in the system
 text is a courtesy, not the enforcement boundary.
+
+`PipelineContext.difficulty` gates which of the four stages actually run
+(see `_DIFFICULTY_STAGE_FLAGS`); implementer always runs. An unrecognized
+difficulty falls back to "difficult" (today's full pipeline) rather than
+failing the job -- validation should have already rejected anything else
+before a worker ever sees it (see `github_client.validate_issue_body`),
+this is just belt-and-suspenders on the conservative side.
 """
 
 from __future__ import annotations
@@ -24,13 +31,23 @@ from guppy.common.store import Store
 from guppy.worker.prompts import (
     PipelineContext,
     code_reviewer_prompt,
+    code_reviewer_prompt_no_plan,
     plan_reviewer_prompt,
     planner_prompt,
     implementer_prompt,
+    implementer_prompt_no_plan,
 )
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 FULL_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
+
+# (run_planner, run_plan_reviewer, run_code_reviewer) -- implementer always runs.
+_DIFFICULTY_STAGE_FLAGS: dict[str, tuple[bool, bool, bool]] = {
+    "trivial": (False, False, False),
+    "easy": (False, False, True),
+    "medium": (True, False, True),
+    "difficult": (True, True, True),
+}
 
 LogFn = Callable[[str], None]
 
@@ -141,55 +158,69 @@ async def run_pipeline(
         base.update(overrides)
         return PipelineOutcome(**base)
 
-    # --- planner ---------------------------------------------------------
-    store.set_stage(job_id, "planner")
-    log("=== planner ===")
-    planner_result = await run_stage(
-        repo_dir=repo_dir,
-        prompt=planner_prompt(ctx),
-        allowed_tools=READ_ONLY_TOOLS,
-        max_turns=turn_budgets.planner,
-        log=log,
+    run_planner, run_plan_reviewer, run_code_reviewer = _DIFFICULTY_STAGE_FLAGS.get(
+        ctx.difficulty, _DIFFICULTY_STAGE_FLAGS["difficult"]
     )
-    if (reason := _check_skip(planner_result)) is not None:
-        return outcome(skipped=True, skip_reason=reason)
-    if not planner_result.completed:
-        return outcome(error="planner stage did not complete (hit its turn limit or errored)")
 
-    plan = planner_result.final_text
-    plan_path = artifacts_dir / "plan.md"
-    plan_path.write_text(plan)
-    store.set_artifact(job_id, "plan_artifact_path", str(plan_path))
+    plan: str | None = None
+    plan_path: Path | None = None
+    plan_reviewed_path: Path | None = None
+
+    # --- planner ---------------------------------------------------------
+    if run_planner:
+        store.set_stage(job_id, "planner")
+        log("=== planner ===")
+        planner_result = await run_stage(
+            repo_dir=repo_dir,
+            prompt=planner_prompt(ctx),
+            allowed_tools=READ_ONLY_TOOLS,
+            max_turns=turn_budgets.planner,
+            log=log,
+        )
+        if (reason := _check_skip(planner_result)) is not None:
+            return outcome(skipped=True, skip_reason=reason)
+        if not planner_result.completed:
+            return outcome(error="planner stage did not complete (hit its turn limit or errored)")
+
+        plan = planner_result.final_text
+        plan_path = artifacts_dir / "plan.md"
+        plan_path.write_text(plan)
+        store.set_artifact(job_id, "plan_artifact_path", str(plan_path))
 
     # --- plan reviewer -----------------------------------------------------
-    store.set_stage(job_id, "plan_reviewer")
-    log("=== plan reviewer ===")
-    review_result = await run_stage(
-        repo_dir=repo_dir,
-        prompt=plan_reviewer_prompt(ctx, plan),
-        allowed_tools=READ_ONLY_TOOLS,
-        max_turns=turn_budgets.plan_reviewer,
-        log=log,
-    )
-    if (reason := _check_skip(review_result)) is not None:
-        return outcome(skipped=True, skip_reason=reason, plan_path=plan_path)
-    if not review_result.completed:
-        return outcome(
-            error="plan-review stage did not complete (hit its turn limit or errored)",
-            plan_path=plan_path,
+    if run_plan_reviewer:
+        store.set_stage(job_id, "plan_reviewer")
+        log("=== plan reviewer ===")
+        review_result = await run_stage(
+            repo_dir=repo_dir,
+            prompt=plan_reviewer_prompt(ctx, plan),
+            allowed_tools=READ_ONLY_TOOLS,
+            max_turns=turn_budgets.plan_reviewer,
+            log=log,
         )
+        if (reason := _check_skip(review_result)) is not None:
+            return outcome(skipped=True, skip_reason=reason, plan_path=plan_path)
+        if not review_result.completed:
+            return outcome(
+                error="plan-review stage did not complete (hit its turn limit or errored)",
+                plan_path=plan_path,
+            )
 
-    final_plan = review_result.final_text
-    plan_reviewed_path = artifacts_dir / "plan_reviewed.md"
-    plan_reviewed_path.write_text(final_plan)
-    store.set_artifact(job_id, "plan_review_artifact_path", str(plan_reviewed_path))
+        plan = review_result.final_text
+        plan_reviewed_path = artifacts_dir / "plan_reviewed.md"
+        plan_reviewed_path.write_text(plan)
+        store.set_artifact(job_id, "plan_review_artifact_path", str(plan_reviewed_path))
 
     # --- implementer -----------------------------------------------------
+    # implementer always runs, but low-difficulty jobs that skipped the
+    # planner get the no-plan prompt variant (see prompts.py docstring)
+    # instead of a placeholder plan.
     store.set_stage(job_id, "implementer")
     log("=== implementer ===")
+    impl_prompt = implementer_prompt(ctx, plan) if plan is not None else implementer_prompt_no_plan(ctx)
     impl_result = await run_stage(
         repo_dir=repo_dir,
-        prompt=implementer_prompt(ctx, final_plan),
+        prompt=impl_prompt,
         allowed_tools=FULL_TOOLS,
         max_turns=turn_budgets.implementer,
         log=log,
@@ -204,23 +235,31 @@ async def run_pipeline(
         )
 
     # --- code reviewer -----------------------------------------------------
-    store.set_stage(job_id, "code_reviewer")
-    log("=== code reviewer ===")
-    code_review_result = await run_stage(
-        repo_dir=repo_dir,
-        prompt=code_reviewer_prompt(ctx, final_plan, impl_result.final_text),
-        allowed_tools=FULL_TOOLS,
-        max_turns=turn_budgets.code_reviewer,
-        log=log,
-    )
-    if (reason := _check_skip(code_review_result)) is not None:
-        return outcome(skipped=True, skip_reason=reason, plan_path=plan_path, plan_reviewed_path=plan_reviewed_path)
-    if not code_review_result.completed:
-        return outcome(
-            error="code-review stage did not complete (hit its turn limit or errored)",
-            plan_path=plan_path,
-            plan_reviewed_path=plan_reviewed_path,
+    if run_code_reviewer:
+        store.set_stage(job_id, "code_reviewer")
+        log("=== code reviewer ===")
+        cr_prompt = (
+            code_reviewer_prompt(ctx, plan, impl_result.final_text)
+            if plan is not None
+            else code_reviewer_prompt_no_plan(ctx, impl_result.final_text)
         )
+        code_review_result = await run_stage(
+            repo_dir=repo_dir,
+            prompt=cr_prompt,
+            allowed_tools=FULL_TOOLS,
+            max_turns=turn_budgets.code_reviewer,
+            log=log,
+        )
+        if (reason := _check_skip(code_review_result)) is not None:
+            return outcome(
+                skipped=True, skip_reason=reason, plan_path=plan_path, plan_reviewed_path=plan_reviewed_path
+            )
+        if not code_review_result.completed:
+            return outcome(
+                error="code-review stage did not complete (hit its turn limit or errored)",
+                plan_path=plan_path,
+                plan_reviewed_path=plan_reviewed_path,
+            )
 
     return outcome(
         plan_path=plan_path,

@@ -49,7 +49,9 @@ Worker (one per job, src/guppy/worker/, torn down after)
                   up, leaving dangling paths in the store) -- if you're
                   adding a new kind of worker output that needs to
                   outlive the job, it goes under /data, not /work.
-  pipeline.py  -> the 4-stage Claude Agent SDK orchestration
+  pipeline.py  -> the (up to) 4-stage Claude Agent SDK orchestration --
+                  which stages actually run is gated by the issue's
+                  optional `## Difficulty` (see below)
   prompts.py   -> per-stage prompt construction, shared SKIP contract
   git_ops.py   -> subprocess git only; redacts the embedded token from any
                   raised error before it can reach logs/SQLite
@@ -68,10 +70,20 @@ the first two stages, `FULL_TOOLS` for the last two) is the actual safety
 boundary, not the SKIP convention — a planner literally cannot call
 `Edit`/`Write`/`Bash` regardless of what a prompt says.
 
+The optional `## Difficulty` issue section (`trivial|easy|medium|difficult`,
+default `difficult` = today's unchanged full pipeline) picks a *subset* of
+those four stages via `pipeline._DIFFICULTY_STAGE_FLAGS` — implementer
+always runs; trivial/easy skip the planner entirely, easy/medium skip
+plan_reviewer. No escalation path exists if a reduced pipeline turns out
+insufficient (same SKIP escape hatch as always), and turn budgets don't
+vary by difficulty — see `DESIGN.md`'s Issue format section for the full
+rationale. A present-but-invalid `## Difficulty` value fails the whole
+issue's validation, same as a bad `## Type`.
+
 Test generation is unconditional: the implementer's prompt always requires
 tests, whether or not the issue's optional `## Tests` section is filled
-in. If present, its content is passed through as required coverage in
-addition to whatever else the agent decides to test.
+in, **at every difficulty**. If present, its content is passed through as
+required coverage in addition to whatever else the agent decides to test.
 
 ## Claude Agent SDK facts worth not re-deriving
 
