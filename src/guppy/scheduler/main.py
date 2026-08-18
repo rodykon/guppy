@@ -9,7 +9,7 @@ import os
 import time
 
 from guppy.common.config import GuppyConfig, RepoConfig, load_config, resolve_secret
-from guppy.common.github_client import GitHubClient
+from guppy.common.github_client import DEFAULT_DIFFICULTY, GitHubClient
 from guppy.common.store import Job, Store
 from guppy.scheduler.dispatcher import Dispatcher
 from guppy.scheduler.launcher import DockerSocketLauncher, WorkerJobSpec
@@ -29,7 +29,9 @@ def _build_spec(config: GuppyConfig, repo: RepoConfig, job: Job) -> WorkerJobSpe
         base_branch=repo.base_branch,
         worker_image=repo.effective_worker_image(config.settings.default_worker_image),
         setup_commands=repo.setup_commands,
-        turn_budgets=repo.effective_turn_budgets(config.settings.default_turn_budgets),
+        turn_budgets=repo.effective_turn_budgets(
+            config.settings.default_turn_budgets, job.difficulty or DEFAULT_DIFFICULTY
+        ),
         github_token=resolve_secret(repo.github_token_env),
         anthropic_api_key=resolve_secret(config.settings.anthropic_api_key_env),
         sqlite_path=config.settings.sqlite_path,

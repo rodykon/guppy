@@ -24,7 +24,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, ToolUseBlock, query
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ProcessError,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+    query,
+)
 
 from guppy.common.config import TurnBudgets
 from guppy.common.store import Store
@@ -74,29 +82,49 @@ async def run_stage(*, repo_dir: Path, prompt: str, allowed_tools: list[str], ma
     hit_turn_limit = False
     completed = False
     cost_usd = None
+    saw_result = False
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    log(block.text)
-                elif isinstance(block, ToolUseBlock):
-                    tool_calls.append(block.name)
-                    log(f"[tool] {block.name} {block.input}")
-        elif isinstance(message, ResultMessage):
-            cost_usd = getattr(message, "total_cost_usd", None)
-            final_text = message.result or ""
-            # `terminal_reason` is the documented, forward-compatible signal
-            # for why the query loop ended; `subtype`/`is_error` are kept as
-            # a fallback for older CLI versions that don't set it.
-            terminal_reason = getattr(message, "terminal_reason", None)
-            if terminal_reason == "max_turns" or message.subtype == "error_max_turns":
-                hit_turn_limit = True
-                log(f"[stage hit its turn limit ({max_turns} turns)]")
-            elif terminal_reason in (None, "completed") and not message.is_error:
-                completed = True
-            else:
-                log(f"[stage ended abnormally: subtype={message.subtype} terminal_reason={terminal_reason}]")
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        log(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        tool_calls.append(block.name)
+                        log(f"[tool] {block.name} {block.input}")
+            elif isinstance(message, ResultMessage):
+                saw_result = True
+                cost_usd = getattr(message, "total_cost_usd", None)
+                final_text = message.result or ""
+                # `terminal_reason` is the documented, forward-compatible signal
+                # for why the query loop ended; `subtype`/`is_error` are kept as
+                # a fallback for older CLI versions that don't set it.
+                terminal_reason = getattr(message, "terminal_reason", None)
+                if terminal_reason == "max_turns" or message.subtype == "error_max_turns":
+                    hit_turn_limit = True
+                    log(f"[stage hit its turn limit ({max_turns} turns)]")
+                elif terminal_reason in (None, "completed") and not message.is_error:
+                    completed = True
+                else:
+                    log(f"[stage ended abnormally: subtype={message.subtype} terminal_reason={terminal_reason}]")
+    except ProcessError:
+        # The installed CLI exits non-zero on purpose whenever it reports an
+        # is_error result (error_max_turns, error_during_execution, ...),
+        # for shell-script consumers -- and the SDK's transport then raises a
+        # trailing ProcessError on the *next* read, after already having
+        # delivered that ResultMessage above (see
+        # claude_agent_sdk/_internal/query.py). Contrary to what an earlier
+        # version of this file's docs assumed, the loop DOES raise on
+        # exhaustion, just one iteration after the informative ResultMessage.
+        # If we already parsed that message, this is the known, harmless
+        # trailing artifact, not a fresh crash -- swallow it and return what
+        # we already have. If we never saw a ResultMessage at all, this is a
+        # genuine failure (bad CLI invocation, crash before any result), so
+        # let it propagate to the worker's top-level handler.
+        if not saw_result:
+            raise
+        log("[stage's CLI process exited non-zero after reporting its result -- expected, not a fresh error]")
 
     return StageResult(
         completed=completed,

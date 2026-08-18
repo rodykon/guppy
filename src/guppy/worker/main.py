@@ -194,6 +194,14 @@ async def _async_main() -> int:
             store.mark_failed(job_id, f"worker crashed: {e}")
         except Exception:
             logger.exception("failed to record crash in store")
+        try:
+            github.comment(
+                issue_number,
+                f"🤖 The agent crashed while working on this issue: {e}. "
+                "This has been logged for investigation; no changes were pushed.",
+            )
+        except Exception:
+            logger.exception("failed to comment on %s#%d about the crash", repo_slug, issue_number)
         return 1
 
 

@@ -14,6 +14,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from guppy.common.github_client import DIFFICULTY_VALUES
+
 DEFAULT_WORKER_IMAGE = "guppy-worker:latest"
 
 PIPELINE_STAGES = ("planner", "plan_reviewer", "implementer", "code_reviewer")
@@ -21,7 +23,11 @@ PIPELINE_STAGES = ("planner", "plan_reviewer", "implementer", "code_reviewer")
 
 class TurnBudgets(BaseModel):
     """Max agent turns per pipeline stage. See DESIGN.md: per-stage budgets,
-    global default overridable per repo."""
+    global default overridable per repo, then optionally overridden again
+    per issue difficulty (`RepoConfig.difficulty_turn_budgets`) -- trivial/
+    easy skip the planner, so their implementer absorbs the exploration
+    work a planner used to do and can need more turns than the flat
+    default (observed live against rodykon/tempo#6, 2026-08-15)."""
 
     planner: int = 15
     plan_reviewer: int = 10
@@ -51,6 +57,11 @@ class RepoConfig(BaseModel):
     worker_image: str | None = None
     setup_commands: list[str] = Field(default_factory=list)
     turn_budgets: TurnBudgets | None = None
+    # Keyed by issue difficulty (trivial|easy|medium|difficult); each value
+    # is a partial TurnBudgets override applied on top of this repo's
+    # already-resolved (global-default + repo-override) budgets. Absent
+    # difficulty key -> no further override.
+    difficulty_turn_budgets: dict[str, TurnBudgets] = Field(default_factory=dict)
 
     @field_validator("slug")
     @classmethod
@@ -59,11 +70,23 @@ class RepoConfig(BaseModel):
             raise ValueError(f"repo slug must be 'owner/name', got {v!r}")
         return v
 
+    @field_validator("difficulty_turn_budgets")
+    @classmethod
+    def _validate_difficulty_keys(cls, v: dict[str, TurnBudgets]) -> dict[str, TurnBudgets]:
+        unknown = sorted(set(v) - set(DIFFICULTY_VALUES))
+        if unknown:
+            raise ValueError(
+                f"unknown difficulty key(s) in difficulty_turn_budgets: {unknown}; "
+                f"must be one of {DIFFICULTY_VALUES}"
+            )
+        return v
+
     def effective_worker_image(self, default_image: str) -> str:
         return self.worker_image or default_image
 
-    def effective_turn_budgets(self, default_budgets: TurnBudgets) -> TurnBudgets:
-        return default_budgets.merged_with_override(self.turn_budgets)
+    def effective_turn_budgets(self, default_budgets: TurnBudgets, difficulty: str) -> TurnBudgets:
+        base = default_budgets.merged_with_override(self.turn_budgets)
+        return base.merged_with_override(self.difficulty_turn_budgets.get(difficulty))
 
 
 class Settings(BaseModel):

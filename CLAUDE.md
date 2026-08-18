@@ -75,10 +75,18 @@ default `difficult` = today's unchanged full pipeline) picks a *subset* of
 those four stages via `pipeline._DIFFICULTY_STAGE_FLAGS` — implementer
 always runs; trivial/easy skip the planner entirely, easy/medium skip
 plan_reviewer. No escalation path exists if a reduced pipeline turns out
-insufficient (same SKIP escape hatch as always), and turn budgets don't
-vary by difficulty — see `DESIGN.md`'s Issue format section for the full
-rationale. A present-but-invalid `## Difficulty` value fails the whole
-issue's validation, same as a bad `## Type`.
+insufficient (same SKIP escape hatch as always). A present-but-invalid
+`## Difficulty` value fails the whole issue's validation, same as a bad
+`## Type`.
+
+Turn budgets **do** vary by difficulty: `RepoConfig.difficulty_turn_budgets`
+(keyed by difficulty) layers on top of the repo's already-resolved
+default+repo-override `TurnBudgets`, resolved once in
+`scheduler/main.py::_build_spec` using the job's persisted `difficulty` —
+the worker itself stays difficulty-budget-agnostic, same as before. See
+`DESIGN.md`'s Issue format section for why this went from deliberately
+deferred to implemented within the same day (`rodykon/tempo#6` hit the flat
+implementer budget almost immediately).
 
 Test generation is unconditional: the implementer's prompt always requires
 tests, whether or not the issue's optional `## Tests` section is filled
@@ -99,11 +107,22 @@ ever seems stale):
   (an earlier draft did; fixed, see `pipeline.run_stage`).
 - Tool scoping is `allowed_tools`/`disallowed_tools` (plain lists of tool
   names); non-interactive auto-approval is `permission_mode="acceptEdits"`.
-- Turn budget is `max_turns`; on exhaustion the loop does **not** raise —
-  it yields a final `ResultMessage`. Detect it via
-  `ResultMessage.terminal_reason == "max_turns"` (documented, current) with
-  `subtype == "error_max_turns"` kept as a fallback for older CLI versions
-  that don't set `terminal_reason`. Don't rely on `subtype` alone.
+- Turn budget is `max_turns`; on exhaustion the loop yields a final
+  `ResultMessage` first (detect it via `ResultMessage.terminal_reason ==
+  "max_turns"`, with `subtype == "error_max_turns"` kept as a fallback for
+  older CLI versions that don't set `terminal_reason` — don't rely on
+  `subtype` alone) -- **but this earlier note that the loop "does not
+  raise" was wrong**, confirmed live against a real turn-limit hit
+  (`rodykon/tempo#6`, 2026-08-15): the installed CLI exits non-zero on
+  purpose whenever it reports any `is_error` result (`error_max_turns`,
+  `error_during_execution`, ...), and the SDK's transport then raises a
+  trailing `ProcessError` on the *next* read after already delivering that
+  ResultMessage (see `claude_agent_sdk/_internal/query.py`). `run_stage`
+  now catches `ProcessError` and treats it as expected/harmless once a
+  `ResultMessage` has already been parsed — re-raises only if no
+  `ResultMessage` was ever seen. Any future stage-level "why didn't this
+  error surface" debugging should start here, not from the assumption the
+  loop can't raise.
 - `ANTHROPIC_API_KEY` is read from the environment automatically.
 
 ## Commands

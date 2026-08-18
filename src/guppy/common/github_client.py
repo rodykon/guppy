@@ -34,9 +34,11 @@ _TESTS_RE = re.compile(
 # value is validated as strictly as ## Type, so a typo fails the whole issue
 # rather than silently degrading to a different pipeline than the filer
 # intended.
-_DIFFICULTY_VALUES = ("trivial", "easy", "medium", "difficult")
+# Public so other modules (e.g. common/config.py's per-difficulty turn
+# budget overrides) validate against the same set instead of duplicating it.
+DIFFICULTY_VALUES = ("trivial", "easy", "medium", "difficult")
 _DIFFICULTY_RE = re.compile(
-    r"^##\s+Difficulty\s*\n+\s*(" + "|".join(_DIFFICULTY_VALUES) + r")\s*$",
+    r"^##\s+Difficulty\s*\n+\s*(" + "|".join(DIFFICULTY_VALUES) + r")\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 _DIFFICULTY_HEADER_RE = re.compile(r"^##\s+Difficulty\s*\n", re.MULTILINE | re.IGNORECASE)

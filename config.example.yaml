@@ -47,6 +47,17 @@ repos:
     # Uncomment to override turn budgets just for this repo.
     # turn_budgets:
     #   implementer: 50
+    # Uncomment to override turn budgets further, per issue difficulty (see
+    # README.md's "## Difficulty" section). Only the stages listed here are
+    # overridden; applied on top of this repo's turn_budgets (or the global
+    # default_turn_budgets, if turn_budgets isn't set). trivial/easy skip the
+    # planner, so their implementer absorbs the exploration a planner used
+    # to do and often needs a bigger budget than the flat default.
+    # difficulty_turn_budgets:
+    #   trivial:
+    #     implementer: 45
+    #   easy:
+    #     implementer: 45
 
   - slug: "acme/data-pipeline"
     github_token_env: "GUPPY_TOKEN_ACME_DATA_PIPELINE"

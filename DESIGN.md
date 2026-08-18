@@ -162,10 +162,37 @@ Reduced pipelines don't escalate: if the implementer or code reviewer
 decides mid-task that a `trivial`/`easy`/`medium` classification was wrong,
 the only available response is the same single-pass SKIP escape hatch used
 everywhere else — the job aborts with an explanatory comment rather than
-restarting with more stages. Turn budgets (`TurnBudgets`) don't vary by
-difficulty either; a trivial/easy implementer absorbing the planner's
-exploration work uses the same per-stage budget as always, revisited later
-only if that turns out to matter in practice.
+restarting with more stages.
+
+Turn budgets **do** vary by difficulty, via `RepoConfig.difficulty_turn_budgets`
+(keyed by difficulty, each a partial `TurnBudgets` override applied on top of
+the repo's already-resolved default+repo-override budgets — see
+`RepoConfig.effective_turn_budgets`). This was originally deferred ("revisit
+if trivial/easy runs actually hit turn limits in practice") but got revisited
+almost immediately: the first live `easy` run
+([rodykon/tempo#6](https://github.com/rodykon/tempo/issues/6),
+2026-08-15) hit the implementer's flat 30-turn budget, because with no
+planner having run, the implementer was absorbing exploration work a
+planner used to do on top of implementing and testing. Resolution happens
+in the scheduler (`scheduler/main.py::_build_spec`), not the worker — the
+scheduler already has both full config access and the job's persisted
+`difficulty` (see the `jobs.difficulty` column), so the final per-stage
+turn counts are computed once and baked into the worker's env vars exactly
+as before; the worker itself has no difficulty-aware budget logic.
+
+That same `easy` run also surfaced a second, unrelated bug: when a stage
+hits its turn limit, the installed `claude-agent-sdk` raises a trailing
+`ProcessError` on top of the informative `ResultMessage` it already
+delivered (the CLI exits non-zero on purpose for `is_error` results — see
+`claude_agent_sdk/_internal/query.py`). That exception used to escape
+`pipeline.run_stage` uncaught, landing in `worker/main.py`'s generic crash
+handler — which recorded the failure in SQLite but never commented on the
+issue, so the failure was silent on GitHub. `run_stage` now catches
+`ProcessError` and treats it as expected once a `ResultMessage` has already
+been parsed; the crash handler now also always posts a comment. See
+`CLAUDE.md`'s SDK-facts section for the corrected note on this — the
+earlier claim that "the loop does not raise" on turn exhaustion was
+incomplete.
 
 ---
 
@@ -177,7 +204,8 @@ Two layers:
   budget per stage, max concurrent jobs, Anthropic API key, SQLite path).
 - **Per-repo entries** (repo slug, GitHub token reference, whitelisted
   users, base branch, worker base image override, setup commands override,
-  per-stage turn budget overrides).
+  per-stage turn budget overrides, and per-difficulty turn budget overrides
+  layered on top of those).
 
 Secrets (GitHub tokens, Anthropic key) are referenced from config but supplied
 via environment variables / a secrets file — never committed.
